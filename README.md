@@ -83,3 +83,8 @@ Changes include:
 - Existing answer frame remains the baseline until a genuinely different question is detected.
 
 This is especially useful for assessment layouts where the header, timer, navigation, buttons and sidebars remain fixed while only the question text/options change.
+
+
+## Other-mode answer lock
+
+After an Other-mode coding/problem answer is generated, normal scrolling no longer clears the result. A visually changed stable view is checked against the previous question context. The existing answer remains visible for `same_question` or `uncertain`, and a new question session begins only when `new_question` is confirmed.

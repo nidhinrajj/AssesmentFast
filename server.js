@@ -81,6 +81,78 @@ app.post('/api/analyze', async (req, res) => {
   }
 });
 
+app.post('/api/classify-change', async (req, res) => {
+  try {
+    const image = req.body?.image;
+    const previousQuestion = String(req.body?.previousQuestion || '').slice(0, 12000);
+    const previousSummary = String(req.body?.previousSummary || '').slice(0, 4000);
+    const previousType = String(req.body?.previousType || 'other').slice(0, 80);
+
+    if (typeof image !== 'string' || !image.startsWith('data:image/')) {
+      return res.status(400).json({ error: 'A current camera image is required.' });
+    }
+
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      return res.status(500).json({ error: 'OPENAI_API_KEY is not configured on the server.' });
+    }
+
+    const model = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
+    const prompt = `You are deciding whether a newly visible assessment screen belongs to the SAME question that was already answered, or is a genuinely NEW question.
+
+This check is used after the user has already received an answer to a long coding/problem question. The user may scroll up or down within that same question. Scrolling, seeing a different part of the same starter code, constraints, examples, answer area, editor, or explanation MUST be classified as same_question.
+
+Only classify new_question when there is strong evidence that the assessment has advanced to a different question/problem, such as a different prompt/task, different question number with different content, a new unrelated code problem, or clearly replaced answer choices.
+
+If evidence is insufficient, return uncertain. Prefer same_question over new_question when the image could simply be another scrolled portion of the prior problem.
+
+Previous question type: ${previousType}
+Previous question summary: ${previousSummary || '(not available)'}
+Previous reconstructed question: ${previousQuestion || '(not available)'}
+
+Return ONLY JSON:
+{
+  "verdict": "same_question|new_question|uncertain",
+  "reason": "one short sentence"
+}`;
+
+    const response = await fetch('https://api.openai.com/v1/responses', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model,
+        input: [{
+          role: 'user',
+          content: [
+            { type: 'input_text', text: prompt },
+            { type: 'input_image', image_url: image, detail: 'low' }
+          ]
+        }]
+      })
+    });
+
+    const raw = await response.json();
+    if (!response.ok) {
+      return res.status(response.status).json({
+        error: raw?.error?.message || 'OpenAI API request failed.'
+      });
+    }
+
+    const parsed = parseJsonResponse(extractOutputText(raw));
+    const verdict = ['same_question', 'new_question', 'uncertain'].includes(parsed?.verdict)
+      ? parsed.verdict
+      : 'uncertain';
+
+    return res.json({ verdict, reason: parsed?.reason || '' });
+  } catch (error) {
+    console.error(error);
+    return res.status(500).json({ error: error?.message || 'Unexpected server error.' });
+  }
+});
+
 function buildMcqPrompt() {
   return `You are a visual assessment assistant used ONLY for assessments where AI assistance is explicitly permitted.
 

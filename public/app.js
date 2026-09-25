@@ -45,8 +45,13 @@ const CONFIG = {
   mcqNoiseMultiplier: 2.2,
   mcqMinimumNoiseFloor: 0.75,
   mcqNewQuestionConfirmMs: 600,
-  otherQuietMs: 4200,
+  otherQuietMs: 5200,
   nextQuestionStableMs: 1200,
+  // Once an Other-mode answer is ready, visual scrolling alone must never
+  // clear it. A changed stable view is semantically checked first.
+  otherAnsweredChangeThreshold: 4.2,
+  otherAnsweredStableMs: 1500,
+  otherChangeCheckCooldownMs: 2200,
   maxCaptures: 8,
   captureMaxWidth: 1600,
   jpegQuality: 0.86
@@ -70,6 +75,9 @@ let cameraStartedAt = 0;
 let lastMcqAttemptAt = 0;
 let nextQuestionCandidateSince = 0;
 let recentFrameNoise = 0;
+let lastResultContext = null;
+let lastOtherChangeCheckAt = 0;
+let otherChangeCandidateSince = 0;
 
 els.startBtn.addEventListener('click', startCamera);
 els.stopBtn.addEventListener('click', stopCamera);
@@ -129,6 +137,8 @@ async function startCamera() {
     lastMcqAttemptAt = 0;
     nextQuestionCandidateSince = 0;
     recentFrameNoise = 0;
+    lastOtherChangeCheckAt = 0;
+    otherChangeCandidateSince = 0;
 
     setStatus('running', 'Scanning');
     setScanState(getAssessmentMode() === 'mcq'
@@ -258,8 +268,33 @@ async function watchForNextQuestion(signature, now) {
     return;
   }
 
+  // OTHER mode uses an answer lock. Scrolling through the same long coding
+  // question may radically change pixels, so visual difference alone is not
+  // enough to discard the answer. We first wait for a stable changed view and
+  // ask the backend whether it is still the same question.
   const stableFor = now - stableSince;
-  if (diffFromAnswered >= CONFIG.newContentDiffThreshold && stableFor >= CONFIG.nextQuestionStableMs) {
+  const changedEnough = diffFromAnswered >= CONFIG.otherAnsweredChangeThreshold;
+  const cooldownReady = now - lastOtherChangeCheckAt >= CONFIG.otherChangeCheckCooldownMs;
+
+  if (!changedEnough) {
+    otherChangeCandidateSince = 0;
+    return;
+  }
+
+  if (!otherChangeCandidateSince) otherChangeCandidateSince = now;
+
+  if (stableFor < CONFIG.otherAnsweredStableMs || now - otherChangeCandidateSince < CONFIG.otherAnsweredStableMs || !cooldownReady) {
+    setScanState('Answer locked. Changed view detected; waiting briefly before checking whether this is a new question…');
+    return;
+  }
+
+  lastOtherChangeCheckAt = now;
+  otherChangeCandidateSince = 0;
+  setScanState('Answer locked. Checking whether this is the same question or a new one…');
+
+  const verdict = await classifyOtherQuestionChange(signature);
+
+  if (verdict === 'new_question') {
     sessionNumber += 1;
     captures = [];
     captureSignatures = [];
@@ -267,10 +302,55 @@ async function watchForNextQuestion(signature, now) {
     needsMoreContext = false;
     answered = false;
     answeredSignature = null;
+    lastResultContext = null;
     clearResult();
     renderCaptures();
-    setScanState(`New question detected. Starting question session ${sessionNumber}.`);
+    setScanState(`New question confirmed. Starting question session ${sessionNumber}.`);
     await addCapture({ automatic: true, signature });
+    lastMeaningfulChangeAt = now;
+    return;
+  }
+
+  // SAME or UNCERTAIN: preserve the visible answer. For SAME, adopt the current
+  // scrolled view as the new baseline so continued reading does not repeatedly
+  // trigger checks against the original top-of-question frame.
+  if (verdict === 'same_question') {
+    answeredSignature = new Uint8Array(signature);
+    setScanState('Same question confirmed. Answer remains locked while you continue scrolling.');
+  } else {
+    setScanState('Question change is uncertain. Keeping the current answer until a clearly new question is confirmed.');
+  }
+}
+
+async function classifyOtherQuestionChange(signature) {
+  if (requestInFlight || !lastResultContext) return 'uncertain';
+
+  requestInFlight = true;
+  renderCaptures();
+
+  try {
+    const image = captureJpeg();
+    const response = await fetch('/api/classify-change', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image,
+        previousQuestion: lastResultContext.question || '',
+        previousSummary: lastResultContext.summary || '',
+        previousType: lastResultContext.type || 'other'
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Question-change check failed.');
+    return data.verdict || 'uncertain';
+  } catch (e) {
+    console.warn('Question-change check failed:', e);
+    return 'uncertain';
+  } finally {
+    requestInFlight = false;
+    renderCaptures();
+    if (stream && !els.statusBadge.classList.contains('error')) setStatus('running', 'Scanning');
   }
 }
 
@@ -484,6 +564,9 @@ function resetQuestionSession(message = '') {
   lastMcqAttemptAt = 0;
   nextQuestionCandidateSince = 0;
   recentFrameNoise = 0;
+  lastResultContext = null;
+  lastOtherChangeCheckAt = 0;
+  otherChangeCandidateSince = 0;
   cameraStartedAt = performance.now();
   renderCaptures();
   clearResult();
@@ -540,6 +623,11 @@ async function analyzeCaptures({ manual = false, automatic = false } = {}) {
     }
 
     renderResult(data);
+    lastResultContext = {
+      question: data.question || '',
+      summary: data.question_summary || '',
+      type: data.question_type || 'other'
+    };
 
     if (data.needs_more_pages) {
       answered = false;
@@ -555,6 +643,8 @@ async function analyzeCaptures({ manual = false, automatic = false } = {}) {
     // not against whatever happens to be visible when the API call finishes.
     answeredSignature = analyzedSignature || (lastFrameSignature ? new Uint8Array(lastFrameSignature) : createFrameSignature());
     nextQuestionCandidateSince = 0;
+    otherChangeCandidateSince = 0;
+    lastOtherChangeCheckAt = performance.now();
     els.message.textContent = `Answer ready. Move to the next question; the camera will detect the change automatically.`;
     setScanState('Answer ready. Watching for the next question…');
   } catch (e) {
