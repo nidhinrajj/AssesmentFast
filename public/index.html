@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#101827" />
+  <title>Continuous AI Assessment Camera Assistant</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="shell">
+    <section class="hero">
+      <div>
+        <p class="eyebrow">Continuous mobile camera assistant</p>
+        <h1>AI Assessment Assistant</h1>
+        <p class="sub">Start the camera once and keep it pointed at the assessment. The app watches for stable content changes locally and only sends selected captures for AI analysis.</p>
+      </div>
+      <span id="statusBadge" class="badge idle">Idle</span>
+    </section>
+
+    <section class="card mode-card">
+      <h2>Question mode</h2>
+      <div class="mode-switch" role="radiogroup" aria-label="Question mode">
+        <label class="mode-option">
+          <input type="radio" name="assessmentMode" value="mcq" checked />
+          <span><strong>MCQ</strong><small>I am sure the current assessment contains multiple-choice questions.</small></span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="assessmentMode" value="other" />
+          <span><strong>Other</strong><small>Automatically determine MCQ, Java/code, debugging, output prediction, problem analysis, or another question type.</small></span>
+        </label>
+      </div>
+      <p id="modeHint" class="small mode-hint"></p>
+    </section>
+
+    <section class="card camera-card">
+      <div class="video-wrap">
+        <video id="video" playsinline autoplay muted></video>
+        <div class="guide"><span>Keep the assessment text/code inside this area</span></div>
+      </div>
+      <canvas id="captureCanvas" hidden></canvas>
+      <canvas id="sampleCanvas" hidden></canvas>
+
+      <div class="controls">
+        <button id="startBtn" class="primary">Start camera</button>
+        <button id="stopBtn" disabled>Stop</button>
+        <button id="addPageBtn" disabled>Add view manually</button>
+      </div>
+
+      <div class="scan-panel">
+        <span class="answer-label">Continuous scanner</span>
+        <p id="scanState">Camera is not running.</p>
+      </div>
+
+      <div class="session-head">
+        <strong>Current question context</strong>
+        <span id="pageCount">0 captured views</span>
+      </div>
+      <div id="thumbnails" class="thumbnails"></div>
+
+      <div class="controls two-col">
+        <button id="analyzeBtn" class="primary" disabled>Analyse now</button>
+        <button id="clearBtn" disabled>Reset question</button>
+      </div>
+
+      <p class="small">Automatic scanning is the default. Manual capture and Analyse now remain available as fallbacks if the camera angle or scrolling pattern makes automatic detection difficult.</p>
+    </section>
+
+    <section class="card result-card">
+      <div class="result-head">
+        <div>
+          <h2>Result</h2>
+          <span id="detectedQuestionType" class="type-pill">—</span>
+        </div>
+        <span id="confidence" class="confidence">—</span>
+      </div>
+      <p id="questionSummary" class="summary"></p>
+      <p id="question" class="question muted">No question analysed yet.</p>
+      <div id="options" class="options"></div>
+
+      <div class="answer-box">
+        <span class="answer-label">Answer</span>
+        <div id="answer" class="answer">—</div>
+      </div>
+
+      <div id="logicWrap" class="answer-box" hidden>
+        <span class="answer-label">Simple logic</span>
+        <p id="logic" class="explanation"></p>
+      </div>
+
+      <div id="codeWrap" class="answer-box" hidden>
+        <span class="answer-label">Code</span>
+        <pre id="code" class="code"></pre>
+      </div>
+
+      <p id="explanation" class="explanation"></p>
+      <p id="message" class="message"></p>
+    </section>
+
+    <section class="card compact">
+      <h2>Behaviour</h2>
+      <p><strong>MCQ:</strong> once a stable question is visible, it is analysed automatically. After an answer is displayed, the app keeps watching the live camera and starts a new question when the desktop content changes and stabilises.</p>
+      <p><strong>Other:</strong> each distinct stable view is accumulated while you scroll through a long question. After the screen remains unchanged for a few seconds, all collected views are analysed together. If the AI says more context is required, the same session stays open and continues collecting views.</p>
+    </section>
+  </main>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>
