@@ -68,3 +68,18 @@ For a mobile camera, use an HTTPS deployment or HTTPS tunnel. If you deploy the 
 MCQ mode no longer waits for pixel-perfect camera stability. After a short camera warm-up it captures and analyses the current frame automatically. If the first frame is unreadable (for example during autofocus), it discards that capture and retries automatically. After an answer is returned, the app compares subsequent frames against the exact answered frame and triggers the next MCQ after a short persistent screen-change confirmation.
 
 This is intentionally different from Other mode, which still waits longer so it can accumulate multiple scrolled views for long questions and code snippets.
+
+## Improved MCQ next-question detection
+
+This build improves detection when the assessment UI remains mostly unchanged between questions.
+
+Changes include:
+
+- Question-focused comparison instead of relying on the entire camera frame.
+- Higher-resolution 96x72 detection signatures so text-only changes are preserved.
+- Lower MCQ change threshold for subtle question replacements.
+- Adaptive noise filtering for autofocus, exposure changes and small hand movements.
+- Short 600ms confirmation window before a changed question is accepted.
+- Existing answer frame remains the baseline until a genuinely different question is detected.
+
+This is especially useful for assessment layouts where the header, timer, navigation, buttons and sidebars remain fixed while only the question text/options change.

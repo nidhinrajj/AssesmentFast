@@ -37,8 +37,14 @@ const CONFIG = {
   newContentDiffThreshold: 6.0,
   mcqInitialDelayMs: 700,
   mcqRetryMs: 1800,
-  mcqNewQuestionDiffThreshold: 9.0,
-  mcqNewQuestionConfirmMs: 750,
+  // MCQ next-question detection is intentionally sensitive because many
+  // assessment pages keep the header/sidebar/buttons unchanged and replace
+  // only the question text. This threshold is applied to a cropped
+  // question-focused signature, not the whole camera frame.
+  mcqNewQuestionDiffThreshold: 1.9,
+  mcqNoiseMultiplier: 2.2,
+  mcqMinimumNoiseFloor: 0.75,
+  mcqNewQuestionConfirmMs: 600,
   otherQuietMs: 4200,
   nextQuestionStableMs: 1200,
   maxCaptures: 8,
@@ -63,6 +69,7 @@ let sessionNumber = 1;
 let cameraStartedAt = 0;
 let lastMcqAttemptAt = 0;
 let nextQuestionCandidateSince = 0;
+let recentFrameNoise = 0;
 
 els.startBtn.addEventListener('click', startCamera);
 els.stopBtn.addEventListener('click', stopCamera);
@@ -121,6 +128,7 @@ async function startCamera() {
     cameraStartedAt = performance.now();
     lastMcqAttemptAt = 0;
     nextQuestionCandidateSince = 0;
+    recentFrameNoise = 0;
 
     setStatus('running', 'Scanning');
     setScanState(getAssessmentMode() === 'mcq'
@@ -171,6 +179,14 @@ async function monitorFrame() {
   }
 
   const frameDiff = signatureDiff(lastFrameSignature, signature);
+
+  // Maintain a slowly changing estimate of normal camera noise caused by
+  // autofocus, exposure and tiny hand movements. New-question detection can
+  // then be more sensitive without firing on every small camera fluctuation.
+  recentFrameNoise = recentFrameNoise === 0
+    ? frameDiff
+    : (recentFrameNoise * 0.82) + (frameDiff * 0.18);
+
   const stable = frameDiff <= CONFIG.stableDiffThreshold;
 
   if (stable) {
@@ -203,8 +219,19 @@ async function watchForNextQuestion(signature, now) {
   // meaningfully different for a short confirmation window. We do not wait for
   // pixel-perfect stability, which is unreliable with a handheld phone camera.
   if (getAssessmentMode() === 'mcq') {
-    if (diffFromAnswered >= CONFIG.mcqNewQuestionDiffThreshold) {
+    // Use whichever is stricter: the absolute text-change threshold or an
+    // adaptive threshold based on current camera noise. A genuine question
+    // replacement generally stays different from the answered frame across
+    // several samples, while autofocus/exposure noise oscillates around it.
+    const adaptiveThreshold = Math.max(
+      CONFIG.mcqNewQuestionDiffThreshold,
+      Math.max(recentFrameNoise, CONFIG.mcqMinimumNoiseFloor) * CONFIG.mcqNoiseMultiplier
+    );
+
+    if (diffFromAnswered >= adaptiveThreshold) {
       if (!nextQuestionCandidateSince) nextQuestionCandidateSince = now;
+
+      setScanState(`Possible new MCQ detected (${diffFromAnswered.toFixed(1)} change). Confirming…`);
 
       if (now - nextQuestionCandidateSince >= CONFIG.mcqNewQuestionConfirmMs) {
         sessionNumber += 1;
@@ -328,12 +355,30 @@ function createFrameSignature() {
   if (!vw || !vh) return null;
 
   const canvas = els.sampleCanvas;
-  const w = 48;
-  const h = 36;
+
+  // Focus change detection on the central assessment-content area. This
+  // deliberately de-emphasises static navigation, headers, timers, borders
+  // and the physical background around the monitor. It makes a change in the
+  // question/options contribute much more strongly to the signature.
+  const cropX = vw * 0.06;
+  const cropY = vh * 0.10;
+  const cropW = vw * 0.88;
+  const cropH = vh * 0.76;
+
+  // Higher resolution than the previous 48x36 signature so text-only changes
+  // are not averaged away. This is still tiny enough to run comfortably on a
+  // phone every 500ms.
+  const w = 96;
+  const h = 72;
   canvas.width = w;
   canvas.height = h;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.drawImage(els.video, 0, 0, w, h);
+
+  ctx.drawImage(
+    els.video,
+    cropX, cropY, cropW, cropH,
+    0, 0, w, h
+  );
 
   const data = ctx.getImageData(0, 0, w, h).data;
   const signature = new Uint8Array(w * h);
@@ -438,6 +483,7 @@ function resetQuestionSession(message = '') {
   stableSince = performance.now();
   lastMcqAttemptAt = 0;
   nextQuestionCandidateSince = 0;
+  recentFrameNoise = 0;
   cameraStartedAt = performance.now();
   renderCaptures();
   clearResult();
