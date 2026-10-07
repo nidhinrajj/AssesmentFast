@@ -1,90 +1,120 @@
-# Continuous Mobile Assessment Camera Assistant
+# AI Assessment Assistant — Camera + Audio
 
-This test application is designed for assessments where AI assistance is explicitly permitted.
+This test application is intended only for assessments where AI assistance is explicitly permitted. It displays suggested answers in its own UI and does not click or submit answers on the assessment website.
 
-## What changed
+## Modes
 
-The camera remains live after you press **Start camera**.
+### MCQ
+- Start the camera once and keep it pointed at the assessment.
+- The first visible MCQ is analysed automatically.
+- The answer and a short explanation are displayed.
+- The camera remains live and uses question-focused frame comparison to detect subtle next-question changes even when the surrounding UI stays almost identical.
+- If the model needs options below the fold, additional distinct views can be added to the same MCQ.
 
-### MCQ mode
-- Watches the camera locally for a stable question.
-- Automatically captures and analyses the first question.
-- Displays the selected option and a short explanation.
-- Keeps the camera running.
-- When the desktop content changes to a new stable question, it automatically starts a new session and analyses it.
+### Other
+- Intended for Java/coding, debugging, runtime/compile errors, output prediction, problem analysis, MCQ, and mixed question types.
+- The camera automatically collects distinct stable views while you scroll through a long question.
+- After a quiet period, all captured views are analysed together.
+- Coding answers include a short/basic logic explanation and the code required by the question.
+- After an answer is generated, it stays locked while you scroll within the same question. A semantic check confirms a genuinely new question before resetting the result.
 
-### Other mode
-- Automatically collects distinct stable camera views while you scroll through a long question.
-- Keeps those views in one question session.
-- After the screen stops changing for roughly four seconds, all views are sent together for analysis.
-- The AI determines whether the task is an MCQ, Java code completion, method implementation, full program, runtime/compile error, output prediction, conceptual question, problem analysis, or another format.
-- If additional context is required, the same session stays open so you can continue scrolling.
+### Audio
+Audio mode never opens the camera.
 
-The browser performs lightweight frame comparison locally. Video frames are not continuously sent to OpenAI; only selected JPEG captures are sent when the content is stable/distinct.
+**Manual Listen**
+1. Press **Start listening**.
+2. Let the complete spoken question play.
+3. Press **Stop & analyse**.
+4. The audio is transcribed and the answer is displayed.
+
+**Continuous Listen**
+1. Press **Start continuous listening**.
+2. The browser performs local voice-activity detection.
+3. After speech followed by roughly 1.6 seconds of silence, that utterance is treated as one question.
+4. The recording is transcribed and analysed automatically.
+5. The previous answer stays visible until the next complete spoken question has been successfully analysed.
+6. Press **Stop continuous listening** to end the session.
+
+The transcription model defaults to `gpt-4o-mini-transcribe` and can be changed with `OPENAI_TRANSCRIBE_MODEL`.
+
+## Camera improvements
+
+### Camera source selector
+After camera permission is granted, available video inputs are listed. On a laptop this can include:
+- integrated webcam
+- external USB webcam
+- other OS-exposed video devices
+
+Choose a camera from the selector. If the camera is already running, changing the selection restarts the camera with the selected device.
+
+### Flip Scanner / mirror correction
+**Flip Scanner** horizontally reverses:
+- the live preview,
+- the image sent to OpenAI,
+- the local change-detection signature.
+
+This makes mirrored/reflected text readable to the scanner. The UI displays **Mirror correction ON** while enabled.
 
 ## Setup
 
-1. Install Node.js 18 or later.
-2. Extract the project.
-3. Run:
+Requires Node.js 18 or later.
 
 ```bash
 npm install
 ```
 
-4. Copy `.env.example` to `.env`.
-5. Put your OpenAI API key in `.env`:
+Copy `.env.example` to `.env` and configure:
 
 ```env
 PORT=3000
 OPENAI_API_KEY=sk-proj-your-real-key
 OPENAI_MODEL=gpt-5.4-mini
+OPENAI_TRANSCRIBE_MODEL=gpt-4o-mini-transcribe
 ```
 
-6. Start the server:
+Start:
 
 ```bash
 npm start
 ```
 
-7. Desktop test:
+Desktop:
 
 ```text
 http://localhost:3000
 ```
 
-For a mobile camera, use an HTTPS deployment or HTTPS tunnel. If you deploy the application, keep `OPENAI_API_KEY` as a server-side secret/environment variable and never place it in `public/app.js` or `index.html`.
+Camera and microphone access require a secure browser context on remote/mobile devices. A Render deployment already provides HTTPS, so no tunnel is required.
+
+## Render
+
+Keep these values as Render environment variables rather than committing a `.env` file:
+
+```text
+OPENAI_API_KEY
+OPENAI_MODEL
+OPENAI_TRANSCRIBE_MODEL
+```
+
+`OPENAI_TRANSCRIBE_MODEL` is optional because the server defaults to `gpt-4o-mini-transcribe`.
+
+Typical Render settings:
+
+```text
+Build Command: npm install
+Start Command: npm start
+```
+
+The server listens on `process.env.PORT` and `0.0.0.0`, so it remains compatible with the existing Render Web Service.
 
 ## Notes
 
-- Up to 8 distinct camera views are retained for one question.
-- `Analyse now` and `Add view manually` are available as fallbacks.
-- If automatic question-change detection is too sensitive for a particular phone/camera angle, the thresholds can be tuned in `public/app.js` under the `CONFIG` object.
-- The application never clicks or submits an answer on the assessment page; it only displays the suggested answer in its own UI.
+- Camera frames are compared locally; continuous video is not streamed to OpenAI.
+- Audio is recorded in question-sized clips; continuous microphone audio is not permanently stored by this application.
+- Up to 8 visual captures are retained for one visual question.
+- The OpenAI API key stays server-side.
+- If an audio request fails or is incomplete, the previously displayed answer is not erased.
 
+## Desktop result panel
 
-## MCQ fast-detection update
-
-MCQ mode no longer waits for pixel-perfect camera stability. After a short camera warm-up it captures and analyses the current frame automatically. If the first frame is unreadable (for example during autofocus), it discards that capture and retries automatically. After an answer is returned, the app compares subsequent frames against the exact answered frame and triggers the next MCQ after a short persistent screen-change confirmation.
-
-This is intentionally different from Other mode, which still waits longer so it can accumulate multiple scrolled views for long questions and code snippets.
-
-## Improved MCQ next-question detection
-
-This build improves detection when the assessment UI remains mostly unchanged between questions.
-
-Changes include:
-
-- Question-focused comparison instead of relying on the entire camera frame.
-- Higher-resolution 96x72 detection signatures so text-only changes are preserved.
-- Lower MCQ change threshold for subtle question replacements.
-- Adaptive noise filtering for autofocus, exposure changes and small hand movements.
-- Short 600ms confirmation window before a changed question is accepted.
-- Existing answer frame remains the baseline until a genuinely different question is detected.
-
-This is especially useful for assessment layouts where the header, timer, navigation, buttons and sidebars remain fixed while only the question text/options change.
-
-
-## Other-mode answer lock
-
-After an Other-mode coding/problem answer is generated, normal scrolling no longer clears the result. A visually changed stable view is checked against the previous question context. The existing answer remains visible for `same_question` or `uncertain`, and a new question session begins only when `new_question` is confirmed.
+On screens 1180px wide or larger, the Result card is shown as a sticky panel on the right-hand side. The camera/audio controls remain in the main column, and the Result panel stays visible while the user scrolls. Mobile and smaller desktop layouts remain single-column and unchanged.

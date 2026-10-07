@@ -10,41 +10,36 @@ const port = Number(process.env.PORT || 3000);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-app.use(express.json({ limit: '40mb' }));
+app.use(express.json({ limit: '45mb' }));
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, model: process.env.OPENAI_MODEL || 'gpt-5.4-mini' });
+  res.json({
+    ok: true,
+    model: process.env.OPENAI_MODEL || 'gpt-5.4-mini',
+    transcription_model: process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe'
+  });
 });
 
 app.post('/api/analyze', async (req, res) => {
   try {
     const incoming = req.body?.images ?? (req.body?.imageDataUrl ? [req.body.imageDataUrl] : []);
     const images = Array.isArray(incoming)
-      ? incoming.filter(x => typeof x === 'string' && x.startsWith('data:image/'))
+      ? incoming.filter((x) => typeof x === 'string' && x.startsWith('data:image/'))
       : [];
-
     const assessmentMode = req.body?.assessmentMode === 'mcq' ? 'mcq' : 'other';
 
-    if (!images.length) {
-      return res.status(400).json({ error: 'At least one camera image is required.' });
-    }
+    if (!images.length) return res.status(400).json({ error: 'At least one camera image is required.' });
+    if (images.length > 8) return res.status(400).json({ error: 'A maximum of 8 captures can be analysed together.' });
 
-    if (images.length > 8) {
-      return res.status(400).json({ error: 'A maximum of 8 captures can be analysed together.' });
-    }
-
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ error: 'OPENAI_API_KEY is not configured on the server.' });
-    }
+    const apiKey = requireApiKey(res);
+    if (!apiKey) return;
 
     const model = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
     const prompt = assessmentMode === 'mcq' ? buildMcqPrompt() : buildOtherPrompt();
-
     const content = [{ type: 'input_text', text: prompt }];
 
-    for (let i = 0; i < images.length; i++) {
+    for (let i = 0; i < images.length; i += 1) {
       content.push({
         type: 'input_text',
         text: `Capture ${i + 1} of ${images.length}. Treat all captures as belonging to the same assessment question unless the content clearly proves otherwise.`
@@ -52,32 +47,13 @@ app.post('/api/analyze', async (req, res) => {
       content.push({ type: 'input_image', image_url: images[i], detail: 'high' });
     }
 
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model,
-        input: [{ role: 'user', content }]
-      })
-    });
-
-    const raw = await response.json();
-
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: raw?.error?.message || 'OpenAI API request failed.'
-      });
-    }
-
+    const raw = await callResponsesApi(apiKey, model, [{ role: 'user', content }]);
     const parsed = parseJsonResponse(extractOutputText(raw));
     parsed.selected_mode = assessmentMode;
     return res.json(parsed);
   } catch (error) {
     console.error(error);
-    return res.status(500).json({ error: error?.message || 'Unexpected server error.' });
+    return res.status(error.status || 500).json({ error: error?.message || 'Unexpected server error.' });
   }
 });
 
@@ -92,12 +68,10 @@ app.post('/api/classify-change', async (req, res) => {
       return res.status(400).json({ error: 'A current camera image is required.' });
     }
 
-    const apiKey = process.env.OPENAI_API_KEY;
-    if (!apiKey) {
-      return res.status(500).json({ error: 'OPENAI_API_KEY is not configured on the server.' });
-    }
-
+    const apiKey = requireApiKey(res);
+    if (!apiKey) return;
     const model = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
+
     const prompt = `You are deciding whether a newly visible assessment screen belongs to the SAME question that was already answered, or is a genuinely NEW question.
 
 This check is used after the user has already received an answer to a long coding/problem question. The user may scroll up or down within that same question. Scrolling, seeing a different part of the same starter code, constraints, examples, answer area, editor, or explanation MUST be classified as same_question.
@@ -116,42 +90,119 @@ Return ONLY JSON:
   "reason": "one short sentence"
 }`;
 
-    const response = await fetch('https://api.openai.com/v1/responses', {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        model,
-        input: [{
-          role: 'user',
-          content: [
-            { type: 'input_text', text: prompt },
-            { type: 'input_image', image_url: image, detail: 'low' }
-          ]
-        }]
-      })
-    });
-
-    const raw = await response.json();
-    if (!response.ok) {
-      return res.status(response.status).json({
-        error: raw?.error?.message || 'OpenAI API request failed.'
-      });
-    }
+    const raw = await callResponsesApi(apiKey, model, [{
+      role: 'user',
+      content: [
+        { type: 'input_text', text: prompt },
+        { type: 'input_image', image_url: image, detail: 'low' }
+      ]
+    }]);
 
     const parsed = parseJsonResponse(extractOutputText(raw));
     const verdict = ['same_question', 'new_question', 'uncertain'].includes(parsed?.verdict)
       ? parsed.verdict
       : 'uncertain';
-
     return res.json({ verdict, reason: parsed?.reason || '' });
   } catch (error) {
     console.error(error);
-    return res.status(500).json({ error: error?.message || 'Unexpected server error.' });
+    return res.status(error.status || 500).json({ error: error?.message || 'Unexpected server error.' });
   }
 });
+
+app.post('/api/audio/analyze', async (req, res) => {
+  try {
+    const audioDataUrl = req.body?.audioDataUrl;
+    if (typeof audioDataUrl !== 'string' || !audioDataUrl.startsWith('data:audio/')) {
+      return res.status(400).json({ error: 'A recorded audio clip is required.' });
+    }
+
+    const apiKey = requireApiKey(res);
+    if (!apiKey) return;
+
+    const { mimeType, bytes, extension } = decodeAudioDataUrl(audioDataUrl);
+    if (!bytes.length) return res.status(400).json({ error: 'The recorded audio clip is empty.' });
+    if (bytes.length > 24 * 1024 * 1024) return res.status(400).json({ error: 'Audio clip is too large. Keep each question recording shorter.' });
+
+    const transcriptionModel = process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe';
+    const form = new FormData();
+    form.append('model', transcriptionModel);
+    form.append('file', new Blob([bytes], { type: mimeType }), `question.${extension}`);
+    form.append('response_format', 'json');
+
+    const transcriptionResponse = await fetch('https://api.openai.com/v1/audio/transcriptions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${apiKey}` },
+      body: form
+    });
+    const transcriptionRaw = await transcriptionResponse.json();
+    if (!transcriptionResponse.ok) {
+      const err = new Error(transcriptionRaw?.error?.message || 'Audio transcription failed.');
+      err.status = transcriptionResponse.status;
+      throw err;
+    }
+
+    const transcript = String(transcriptionRaw?.text || '').trim();
+    if (!transcript) {
+      return res.json(emptyAudioResult('', 'No clear speech was transcribed.'));
+    }
+
+    const model = process.env.OPENAI_MODEL || 'gpt-5.4-mini';
+    const prompt = buildAudioPrompt(transcript);
+    const raw = await callResponsesApi(apiKey, model, [{
+      role: 'user',
+      content: [{ type: 'input_text', text: prompt }]
+    }]);
+    const parsed = parseJsonResponse(extractOutputText(raw));
+    parsed.transcript = transcript;
+    parsed.selected_mode = 'audio';
+    return res.json(parsed);
+  } catch (error) {
+    console.error(error);
+    return res.status(error.status || 500).json({ error: error?.message || 'Unexpected server error.' });
+  }
+});
+
+function requireApiKey(res) {
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({ error: 'OPENAI_API_KEY is not configured on the server.' });
+    return null;
+  }
+  return apiKey;
+}
+
+async function callResponsesApi(apiKey, model, input) {
+  const response = await fetch('https://api.openai.com/v1/responses', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ model, input })
+  });
+  const raw = await response.json();
+  if (!response.ok) {
+    const err = new Error(raw?.error?.message || 'OpenAI API request failed.');
+    err.status = response.status;
+    throw err;
+  }
+  return raw;
+}
+
+function decodeAudioDataUrl(dataUrl) {
+  const match = /^data:(audio\/[\w.+-]+)(?:;[^,]*)?;base64,(.+)$/s.exec(dataUrl);
+  if (!match) throw new Error('Unsupported audio recording format.');
+  const mimeType = match[1];
+  const bytes = Buffer.from(match[2], 'base64');
+  const extension = mimeType.includes('mp4') || mimeType.includes('m4a')
+    ? 'm4a'
+    : mimeType.includes('ogg')
+      ? 'ogg'
+      : mimeType.includes('wav')
+        ? 'wav'
+        : 'webm';
+  return { mimeType, bytes, extension };
+}
 
 function buildMcqPrompt() {
   return `You are a visual assessment assistant used ONLY for assessments where AI assistance is explicitly permitted.
@@ -170,21 +221,7 @@ Your job:
 7. If an essential part of the question or one or more answer options are missing/unreadable, do not guess. Set needs_more_pages=true and state exactly what is missing.
 8. Never invent unreadable text.
 
-Return ONLY valid JSON in this exact shape:
-{
-  "question_detected": true,
-  "question_type": "mcq",
-  "question_summary": "short summary",
-  "question": "reconstructed question text",
-  "options": ["A. ...", "B. ..."],
-  "answer": "B. exact option text",
-  "logic": "",
-  "code": "",
-  "explanation": "short explanation",
-  "confidence": "high|medium|low",
-  "needs_more_pages": false,
-  "missing_context": ""
-}
+${jsonResponseContract('mcq')}
 
 If no readable MCQ is visible, set question_detected=false and leave answer/code empty.`;
 }
@@ -192,42 +229,59 @@ If no readable MCQ is visible, set question_detected=false and leave answer/code
 function buildOtherPrompt() {
   return `You are a visual assessment assistant used ONLY for assessments where AI assistance is explicitly permitted.
 
-The user selected OTHER mode. This means the question type is NOT predetermined. It may be an MCQ, Java/programming question, code-completion task, runtime-error problem, compile-error problem, output-prediction question, conceptual question, debugging task, algorithm/problem-analysis question, or another assessment format.
+The user selected OTHER mode. The question type is not predetermined. It may be an MCQ, Java/programming question, code-completion task, runtime-error problem, compile-error problem, output-prediction question, conceptual question, debugging task, algorithm/problem-analysis question, or another assessment format.
 
 The user may provide several camera captures belonging to ONE assessment question. Treat all captures as one ordered question context. Later captures may contain continuation text, starter code, existing methods, examples, constraints, or answer choices.
 
-First determine exactly what the assessment expects the candidate to do. Then classify the task as one of:
-- mcq
-- fill_code
-- implement_method
-- write_program
-- runtime_error
-- compile_error
-- output_prediction
-- conceptual
-- problem_analysis
-- other
+First determine exactly what the assessment expects the candidate to do. Then classify and answer it using these rules:
+- mcq: selected option directly + short explanation.
+- fill_code: only the code to insert/replace unless small surrounding context is essential.
+- implement_method: simple logic + required method implementation; preserve visible signatures/class structure.
+- write_program: simple approach + complete readable Java solution when Java is requested. Use class Main only for a standalone program when no class name is specified.
+- runtime_error: exact failing statement/operation + likely exception/error + brief reason.
+- compile_error: offending construct + brief reason + minimum correction when useful.
+- output_prediction: expected output first + short explanation.
+- conceptual: concise direct answer.
+- problem_analysis: directly answer what is requested with only useful steps.
 
-Answer rules:
-1. MCQ: return the selected option directly, then a short explanation.
-2. fill_code: return only the code that should be inserted or replaced, unless a small amount of surrounding code is essential for clarity. Preserve visible names and structure.
-3. implement_method: keep the visible method signature/class structure. Give a simple logic summary, then the required method implementation. Do not rewrite the whole program unless required.
-4. write_program: give a simple approach first, then a complete readable Java solution when Java is requested. Use class Main only when a standalone Java program is expected and no different class name is specified.
-5. runtime_error: identify the exact statement/operation where the runtime failure occurs, name the likely exception/error when determinable, and briefly explain why. Do not rewrite the whole program unless the question asks for a fix.
-6. compile_error: identify the offending statement/construct, explain the compile problem briefly, and provide the minimum correction when useful.
-7. output_prediction: give the expected output first, followed by a short explanation.
-8. conceptual: give a concise direct answer.
-9. problem_analysis: directly answer what the problem asks, showing only the reasoning/steps needed for the candidate to use the result.
-10. If starter code is supplied, respect it. Do not invent new methods, APIs, class names, input formats or requirements.
-11. Use all supplied captures together. If a necessary part of the question is missing, set needs_more_pages=true and identify exactly what must be captured next rather than guessing.
-12. Never invent unreadable text.
+Respect starter code and visible names. Never invent methods, APIs, class names, input formats, or unreadable requirements. If necessary context is missing, set needs_more_pages=true and say what must be captured next.
 
-Return ONLY valid JSON in this exact shape:
+${jsonResponseContract('other')}`;
+}
+
+function buildAudioPrompt(transcript) {
+  return `You are an assessment assistant used ONLY for assessments where AI assistance is explicitly permitted.
+
+A spoken question has been transcribed below. Determine whether it contains a complete question and what response format it requires. It may be an MCQ, Java/programming question, debugging/runtime-error problem, output prediction, conceptual question, algorithm/problem-analysis question, or another assessment format.
+
+Transcript:
+---
+${transcript}
+---
+
+Rules:
+1. If the transcript is an MCQ and includes the choices, give the correct option directly with a short explanation.
+2. If it asks to write a Java program, give a very short/simple logic summary followed by complete readable Java code.
+3. If it asks to implement/fill a method or missing code, preserve the stated signature/structure and return only the needed implementation, with a short logic summary.
+4. If it asks where a runtime/compile error occurs, identify the relevant statement/operation, name the likely error/exception when determinable, and briefly explain why.
+5. If it asks for output, give the output first and a short explanation.
+6. For conceptual/problem-analysis questions, answer directly and concisely.
+7. If the transcript is clearly incomplete, only background speech, or lacks essential answer choices/details, do not guess. Set question_detected=false or needs_more_pages=true and state what is missing.
+8. Do not invent code, options, facts, or requirements that were not present in the transcript.
+
+${jsonResponseContract('other')}`;
+}
+
+function jsonResponseContract(forcedType) {
+  const typeValue = forcedType === 'mcq'
+    ? 'mcq'
+    : 'mcq|fill_code|implement_method|write_program|runtime_error|compile_error|output_prediction|conceptual|problem_analysis|other';
+  return `Return ONLY valid JSON in this exact shape:
 {
   "question_detected": true,
-  "question_type": "mcq|fill_code|implement_method|write_program|runtime_error|compile_error|output_prediction|conceptual|problem_analysis|other",
-  "question_summary": "concise description of what the candidate is being asked to do",
-  "question": "reconstructed question text from all supplied captures",
+  "question_type": "${typeValue}",
+  "question_summary": "concise description",
+  "question": "reconstructed question text",
   "options": ["A. ...", "B. ..."],
   "answer": "direct answer or concise answer heading",
   "logic": "simple approach for coding/program-analysis tasks; otherwise empty string",
@@ -235,21 +289,34 @@ Return ONLY valid JSON in this exact shape:
   "explanation": "short useful explanation",
   "confidence": "high|medium|low",
   "needs_more_pages": false,
-  "missing_context": "what additional page/section is needed, otherwise empty string"
+  "missing_context": "what additional information is needed, otherwise empty string"
+}`;
 }
 
-If no readable assessment question is present, set question_detected=false and leave answer/code empty.`;
+function emptyAudioResult(transcript, missingContext) {
+  return {
+    transcript,
+    question_detected: false,
+    question_type: 'other',
+    question_summary: '',
+    question: '',
+    options: [],
+    answer: '',
+    logic: '',
+    code: '',
+    explanation: '',
+    confidence: 'low',
+    needs_more_pages: true,
+    missing_context: missingContext
+  };
 }
 
 function extractOutputText(response) {
   if (typeof response?.output_text === 'string') return response.output_text;
-
   const parts = [];
   for (const item of response?.output || []) {
     for (const content of item?.content || []) {
-      if (content?.type === 'output_text' && typeof content.text === 'string') {
-        parts.push(content.text);
-      }
+      if (content?.type === 'output_text' && typeof content.text === 'string') parts.push(content.text);
     }
   }
   return parts.join('\n');
@@ -261,7 +328,6 @@ function parseJsonResponse(text) {
     .replace(/^```json\s*/i, '')
     .replace(/^```\s*/, '')
     .replace(/\s*```$/, '');
-
   try {
     return JSON.parse(cleaned);
   } catch {
@@ -274,10 +340,10 @@ function parseJsonResponse(text) {
       answer: '',
       logic: '',
       code: '',
-      explanation: 'The model response could not be parsed. Try again with clearer captures.',
+      explanation: 'The model response could not be parsed. Try again with clearer input.',
       confidence: 'low',
       needs_more_pages: true,
-      missing_context: 'Please recapture the question clearly.',
+      missing_context: 'Please provide the complete question again.',
       debug_text: cleaned.slice(0, 1000)
     };
   }
@@ -285,6 +351,6 @@ function parseJsonResponse(text) {
 
 app.listen(port, '0.0.0.0', () => {
   console.log(`Assessment assistant running on http://localhost:${port}`);
-  console.log(`Model: ${process.env.OPENAI_MODEL || 'gpt-5.4-mini'}`);
-  console.log('For mobile camera access, open it through an HTTPS URL/tunnel.');
+  console.log(`Reasoning model: ${process.env.OPENAI_MODEL || 'gpt-5.4-mini'}`);
+  console.log(`Transcription model: ${process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe'}`);
 });

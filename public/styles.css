@@ -63,3 +63,64 @@ select { background: #111d31; color: #eaf1fb; border: 1px solid #344765; border-
 }
 .scan-panel { margin-top: 12px; padding: 12px; border: 1px solid #2e4261; border-radius: 12px; background: #0a1422; }
 .scan-panel p { margin: 6px 0 0; color: #c0cce0; line-height: 1.45; }
+
+/* Camera/audio additions */
+.mode-switch.three { grid-template-columns: repeat(3, 1fr); }
+.camera-tools { display: grid; grid-template-columns: 1fr auto; gap: 9px; align-items: end; margin-top: 12px; }
+.camera-tools .field-label { grid-column: 1 / -1; font-size: .78rem; color: #9fb0c9; text-transform: uppercase; letter-spacing: .06em; }
+.camera-tools select { min-width: 0; width: 100%; }
+.mirror-badge { position: absolute; right: 10px; top: 10px; padding: 6px 9px; border-radius: 999px; font-size: .72rem; background: rgba(20,49,34,.92); border: 1px solid #2c6a49; color: #dff6e8; z-index: 3; }
+video.mirrored { transform: scaleX(-1); }
+.audio-card { display: grid; gap: 14px; }
+.audio-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
+.audio-head h2 { margin-bottom: 4px; }
+.audio-head p { margin: 0; color: #aab9d0; }
+.audio-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.transcript-box { padding: 14px; background: #0b1423; border: 1px solid #324667; border-radius: 14px; }
+.transcript { margin: 7px 0 0; line-height: 1.5; white-space: pre-wrap; }
+.level-track { height: 8px; border-radius: 999px; overflow: hidden; background: #111d31; margin-top: 10px; border: 1px solid #263653; }
+.level-fill { height: 100%; width: 0%; background: currentColor; color: #b8c9e6; transition: width .08s linear; }
+.controls.one-col { grid-template-columns: 1fr; }
+@media (max-width: 700px) {
+  .mode-switch.three, .audio-switch { grid-template-columns: 1fr; }
+}
+
+[hidden] { display: none !important; }
+
+/* Desktop result side panel
+   Keeps the existing single-column/mobile layout unchanged. */
+@media (min-width: 1180px) {
+  .shell {
+    width: min(1420px, calc(100% - 40px));
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(360px, 430px);
+    grid-template-areas:
+      "hero result"
+      "mode result"
+      "camera result"
+      "audio result"
+      "behaviour result";
+    column-gap: 18px;
+    align-items: start;
+  }
+
+  .hero { grid-area: hero; }
+  .mode-card { grid-area: mode; }
+  #cameraCard { grid-area: camera; }
+  #audioCard { grid-area: audio; }
+  .result-card {
+    grid-area: result;
+    position: sticky;
+    top: 16px;
+    max-height: calc(100vh - 32px);
+    overflow-y: auto;
+    margin-top: 8px;
+    scrollbar-gutter: stable;
+  }
+  .compact { grid-area: behaviour; }
+
+  /* Keep long coding answers usable without pushing the whole page down. */
+  .result-card .code {
+    max-height: 44vh;
+  }
+}

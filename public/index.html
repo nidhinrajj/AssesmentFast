@@ -4,42 +4,55 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#101827" />
-  <title>Continuous AI Assessment Camera Assistant</title>
+  <title>AI Assessment Assistant</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <main class="shell">
     <section class="hero">
       <div>
-        <p class="eyebrow">Continuous mobile camera assistant</p>
+        <p class="eyebrow">Camera + audio assistant</p>
         <h1>AI Assessment Assistant</h1>
-        <p class="sub">Start the camera once and keep it pointed at the assessment. The app watches for stable content changes locally and only sends selected captures for AI analysis.</p>
+        <p class="sub">Use continuous camera scanning for visual questions, or switch to Audio to listen to spoken questions. Intended only for assessments where AI assistance is explicitly permitted.</p>
       </div>
       <span id="statusBadge" class="badge idle">Idle</span>
     </section>
 
     <section class="card mode-card">
       <h2>Question mode</h2>
-      <div class="mode-switch" role="radiogroup" aria-label="Question mode">
+      <div class="mode-switch three" role="radiogroup" aria-label="Question mode">
         <label class="mode-option">
           <input type="radio" name="assessmentMode" value="mcq" checked />
-          <span><strong>MCQ</strong><small>I am sure the current assessment contains multiple-choice questions.</small></span>
+          <span><strong>MCQ</strong><small>Fast continuous camera scanning for multiple-choice questions.</small></span>
         </label>
         <label class="mode-option">
           <input type="radio" name="assessmentMode" value="other" />
-          <span><strong>Other</strong><small>Automatically determine MCQ, Java/code, debugging, output prediction, problem analysis, or another question type.</small></span>
+          <span><strong>Other</strong><small>Multi-view scanning for coding, debugging, analysis, MCQ, or other question types.</small></span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="assessmentMode" value="audio" />
+          <span><strong>Audio</strong><small>Listen to a spoken question without opening the camera.</small></span>
         </label>
       </div>
       <p id="modeHint" class="small mode-hint"></p>
     </section>
 
-    <section class="card camera-card">
+    <section id="cameraCard" class="card camera-card">
       <div class="video-wrap">
         <video id="video" playsinline autoplay muted></video>
-        <div class="guide"><span>Keep the assessment text/code inside this area</span></div>
+        <div class="guide"><span>Keep assessment text/code inside this area</span></div>
+        <span id="mirrorBadge" class="mirror-badge" hidden>Mirror correction ON</span>
       </div>
       <canvas id="captureCanvas" hidden></canvas>
       <canvas id="sampleCanvas" hidden></canvas>
+
+      <div class="camera-tools">
+        <label class="field-label" for="cameraSelect">Camera source</label>
+        <select id="cameraSelect" aria-label="Camera source">
+          <option value="">Automatic camera</option>
+        </select>
+        <button id="flipBtn" type="button">Flip scanner</button>
+      </div>
 
       <div class="controls">
         <button id="startBtn" class="primary">Start camera</button>
@@ -63,7 +76,53 @@
         <button id="clearBtn" disabled>Reset question</button>
       </div>
 
-      <p class="small">Automatic scanning is the default. Manual capture and Analyse now remain available as fallbacks if the camera angle or scrolling pattern makes automatic detection difficult.</p>
+      <p class="small">Automatic scanning is the default. Manual capture and Analyse now remain available as fallbacks. Flip Scanner reverses both the preview and the captured image so mirrored text can be analysed correctly.</p>
+    </section>
+
+    <section id="audioCard" class="card audio-card" hidden>
+      <div class="audio-head">
+        <div>
+          <h2>Audio questions</h2>
+          <p class="small">Audio mode uses the microphone only. The camera remains off.</p>
+        </div>
+        <span id="audioStateBadge" class="badge idle">Stopped</span>
+      </div>
+
+      <div class="audio-switch" role="radiogroup" aria-label="Audio mode">
+        <label class="mode-option">
+          <input type="radio" name="audioMode" value="manual" checked />
+          <span><strong>Manual listen</strong><small>Press Start, let the complete question play, then press Stop.</small></span>
+        </label>
+        <label class="mode-option">
+          <input type="radio" name="audioMode" value="continuous" />
+          <span><strong>Continuous listen</strong><small>Keep listening; a silence after speech automatically closes and analyses each question.</small></span>
+        </label>
+      </div>
+
+      <div id="manualAudioControls" class="controls two-col">
+        <button id="audioStartBtn" class="primary">Start listening</button>
+        <button id="audioStopBtn" disabled>Stop & analyse</button>
+      </div>
+
+      <div id="continuousAudioControls" class="controls two-col" hidden>
+        <button id="continuousStartBtn" class="primary">Start continuous listening</button>
+        <button id="continuousStopBtn" disabled>Stop continuous listening</button>
+      </div>
+
+      <div class="scan-panel">
+        <span class="answer-label">Audio status</span>
+        <p id="audioState">Microphone is not listening.</p>
+        <div class="level-track" aria-hidden="true"><div id="audioLevel" class="level-fill"></div></div>
+      </div>
+
+      <div class="transcript-box">
+        <span class="answer-label">Latest transcript</span>
+        <p id="audioTranscript" class="transcript muted">No audio question transcribed yet.</p>
+      </div>
+
+      <div class="controls one-col">
+        <button id="audioClearBtn">Clear audio result</button>
+      </div>
     </section>
 
     <section class="card result-card">
@@ -99,8 +158,9 @@
 
     <section class="card compact">
       <h2>Behaviour</h2>
-      <p><strong>MCQ:</strong> once a stable question is visible, it is analysed automatically. After an answer is displayed, the app keeps watching the live camera and starts a new question when the desktop content changes and stabilises.</p>
-      <p><strong>Other:</strong> distinct stable views are accumulated while you scroll through a long question. After the question is answered, the answer is locked on screen. Further scrolling is treated as the same question unless a semantic check confirms that a genuinely different question has appeared.</p>
+      <p><strong>MCQ:</strong> camera stays live, answers the visible question, and watches for the next question even when the surrounding assessment UI barely changes.</p>
+      <p><strong>Other:</strong> distinct views are accumulated while you scroll. Once answered, the answer remains locked while you move through the same coding/problem question and only resets after a genuinely new question is confirmed.</p>
+      <p><strong>Audio:</strong> Manual Listen analyses after you stop recording. Continuous Listen uses local voice activity and silence detection to split spoken questions automatically; the previous answer remains visible until the next complete question is successfully answered.</p>
     </section>
   </main>
 
