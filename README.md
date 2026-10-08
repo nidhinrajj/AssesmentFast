@@ -118,3 +118,13 @@ The server listens on `process.env.PORT` and `0.0.0.0`, so it remains compatible
 ## Desktop result panel
 
 On screens 1180px wide or larger, the Result card is shown as a sticky panel on the right-hand side. The camera/audio controls remain in the main column, and the Result panel stays visible while the user scrolls. Mobile and smaller desktop layouts remain single-column and unchanged.
+
+
+## 2026 improvements
+- Audio silence detection shortened to about 950ms (from 1600ms); actual response time also depends on network and model latency.
+- Result panel includes text and microphone follow-up requests; the original answer stays visible and follow-ups appear beneath it.
+- Manually added MCQ captures and their answer are retained until Reset question; automatic MCQ next-question scanning pauses for that manually controlled session.
+
+
+### Multiple answer suggestions (Other and Audio)
+When appropriate, the model returns two or three valid answer variants in a single response. A dropdown above the result defaults to Option 1. Selecting another option changes the displayed answer, logic, code, and explanation without a new API call. For questions with only one correct answer, variations must not contradict the correct answer. MCQ mode remains unchanged.

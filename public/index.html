@@ -137,6 +137,11 @@
       <p id="question" class="question muted">No question analysed yet.</p>
       <div id="options" class="options"></div>
 
+      <div id="answerVariantWrap" class="answer-box" hidden>
+        <label class="answer-label" for="answerVariantSelect">Answer / suggestion</label>
+        <select id="answerVariantSelect" aria-label="Choose an answer or suggestion"></select>
+        <p class="muted">Option 1 is shown by default. Choose another option to compare suggestions.</p>
+      </div>
       <div class="answer-box">
         <span class="answer-label">Answer</span>
         <div id="answer" class="answer">—</div>
@@ -154,6 +159,16 @@
 
       <p id="explanation" class="explanation"></p>
       <p id="message" class="message"></p>
+      <div class="followup-box">
+        <h3>Refine this answer</h3>
+        <p class="muted">Ask for a different format or more detail using chat or microphone.</p>
+        <div id="followupHistory" class="followup-history" aria-live="polite"></div>
+        <form id="followupForm" class="followup-form">
+          <textarea id="followupInput" rows="2" placeholder="e.g. Show only the Java method, with no explanation"></textarea>
+          <div class="followup-actions"><button type="submit" id="followupSend">Send</button><button type="button" id="followupMic">🎙 Speak request</button><button type="button" id="followupMicStop" hidden>Stop & send</button></div>
+        </form>
+        <p id="followupStatus" class="message" aria-live="polite"></p>
+      </div>
     </section>
 
     <section class="card compact">

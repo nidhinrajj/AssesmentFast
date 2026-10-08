@@ -124,3 +124,13 @@ video.mirrored { transform: scaleX(-1); }
     max-height: 44vh;
   }
 }
+
+.followup-box { margin-top: 18px; padding-top: 16px; border-top: 1px solid #344766; }
+.followup-box h3 { margin: 0 0 8px; }
+.followup-form textarea { width: 100%; box-sizing: border-box; min-height: 64px; background: #0b1629; color: #e8eefb; border: 1px solid #425674; border-radius: 9px; padding: 10px; font: inherit; }
+.followup-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.followup-entry { padding: 9px 0; border-bottom: 1px solid #344766; white-space: pre-wrap; overflow-wrap: anywhere; }
+.followup-history { max-height: 280px; overflow: auto; margin: 8px 0; }
+
+#answerVariantSelect { width: 100%; margin-top: 8px; padding: 10px; background: #15243b; color: #eef4ff; border: 1px solid #547094; border-radius: 9px; }
+#answerVariantWrap[hidden] { display: none !important; }

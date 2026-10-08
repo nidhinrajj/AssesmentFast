@@ -54,7 +54,9 @@ const CONFIG = {
   mcqNoiseMultiplier: 2.2,
   mcqMinimumNoiseFloor: 0.75,
   mcqNewQuestionConfirmMs: 600,
-  otherQuietMs: 5200,
+  otherQuietMs: 3600,
+  otherFirstCaptureMs: 1100,
+  otherFallbackCaptureMs: 2300,
   nextQuestionStableMs: 1200,
   otherAnsweredChangeThreshold: 4.2,
   otherAnsweredStableMs: 1500,
@@ -64,8 +66,8 @@ const CONFIG = {
   jpegQuality: 0.86,
   audioVadIntervalMs: 100,
   audioSpeechThreshold: 0.035,
-  audioMinSpeechMs: 600,
-  audioEndSilenceMs: 1600,
+  audioMinSpeechMs: 400,
+  audioEndSilenceMs: 950,
   audioMaxUtteranceMs: 90000
 };
 
@@ -78,6 +80,7 @@ let lastFrameSignature = null;
 let stableSince = 0;
 let lastMeaningfulChangeAt = 0;
 let lastAutoCaptureAt = 0;
+let otherLastDistinctAt = 0;
 let answered = false;
 let answeredSignature = null;
 let lastAnalyzedCaptureCount = 0;
@@ -88,6 +91,11 @@ let lastMcqAttemptAt = 0;
 let nextQuestionCandidateSince = 0;
 let recentFrameNoise = 0;
 let lastResultContext = null;
+let latestAnswerData = null;
+let manualCaptureMode = false; // Persists until Reset question; shared by MCQ and Other.
+let followupMessages = [];
+let followupRecorder = null;
+let followupStream = null;
 let lastOtherChangeCheckAt = 0;
 let otherChangeCandidateSince = 0;
 let scannerMirrored = false;
@@ -122,6 +130,9 @@ els.audioStartBtn.addEventListener('click', startManualAudio);
 els.audioStopBtn.addEventListener('click', stopManualAudio);
 els.continuousStartBtn.addEventListener('click', startContinuousAudio);
 els.continuousStopBtn.addEventListener('click', () => stopContinuousAudio('Continuous listening stopped.'));
+$('#followupForm').addEventListener('submit', (event) => { event.preventDefault(); submitFollowup($('#followupInput').value); });
+$('#followupMic').addEventListener('click', startFollowupMic);
+$('#followupMicStop').addEventListener('click', () => { if (followupRecorder?.state === 'recording') followupRecorder.stop(); });
 els.audioClearBtn.addEventListener('click', () => {
   clearResult();
   els.audioTranscript.textContent = 'No audio question transcribed yet.';
@@ -235,6 +246,8 @@ async function startCamera({ restart = false } = {}) {
     stableSince = performance.now();
     lastMeaningfulChangeAt = performance.now();
     cameraStartedAt = performance.now();
+    lastAutoCaptureAt = 0;
+    otherLastDistinctAt = cameraStartedAt;
     lastMcqAttemptAt = 0;
     nextQuestionCandidateSince = 0;
     recentFrameNoise = 0;
@@ -317,6 +330,10 @@ async function monitorFrame() {
 
   lastFrameSignature = signature;
 
+  if (manualCaptureMode) {
+    setScanState(answered ? 'Manual answer locked. Captures remain until Reset question.' : 'Manual collection active. Add views, then press Analyse now. Only Reset question clears captures.');
+    return;
+  }
   if (answered) {
     await watchForNextQuestion(signature, now);
     return;
@@ -341,6 +358,14 @@ async function watchForNextQuestion(signature, now) {
       setScanState(`Possible new MCQ detected (${diffFromAnswered.toFixed(1)} change). Confirming…`);
 
       if (now - nextQuestionCandidateSince >= CONFIG.mcqNewQuestionConfirmMs) {
+        nextQuestionCandidateSince = 0;
+        setScanState('Checking whether the MCQ has actually changed; keeping answer visible…');
+        const verdict = await classifyOtherQuestionChange();
+        if (verdict !== 'new_question') {
+          if (verdict === 'same_question') answeredSignature = new Uint8Array(signature);
+          setScanState('Answer locked. No confirmed new question.');
+          return;
+        }
         sessionNumber += 1;
         captures = [];
         captureSignatures = [];
@@ -471,32 +496,50 @@ async function monitorMcq(signature, now) {
 }
 
 async function monitorOther(signature, now) {
-  const stableFor = now - stableSince;
-  if (stableFor >= CONFIG.nextQuestionStableMs) {
-    const lastCaptureSignature = captureSignatures[captureSignatures.length - 1];
-    const distinct = !lastCaptureSignature || signatureDiff(lastCaptureSignature, signature) >= CONFIG.newContentDiffThreshold;
-    const captureCooldownElapsed = now - lastAutoCaptureAt > 900;
-    if (distinct && captureCooldownElapsed && captures.length < CONFIG.maxCaptures) {
-      await addCapture({ automatic: true, signature });
-      lastAutoCaptureAt = now;
-      lastMeaningfulChangeAt = now;
-      setScanState(`Other mode: captured view ${captures.length}. Continue scrolling if more of the question is below.`);
+  // Automatic mode must always capture the first usable frame, even when
+  // autofocus/monitor flicker prevents a long "stable" interval.
+  if (!captures.length) {
+    if (now - cameraStartedAt < CONFIG.otherFirstCaptureMs) {
+      setScanState('Other mode: preparing the first automatic capture…');
       return;
     }
+    if (await addCapture({ automatic: true, signature })) {
+      lastAutoCaptureAt = now;
+      otherLastDistinctAt = now;
+      lastMeaningfulChangeAt = now;
+      setScanState('Other mode: first view captured automatically. Scroll to show more, or hold still to analyse.');
+    }
+    return;
   }
 
-  const quietFor = now - lastMeaningfulChangeAt;
+  const lastCaptureSignature = captureSignatures[captureSignatures.length - 1];
+  const diff = lastCaptureSignature ? signatureDiff(lastCaptureSignature, signature) : Infinity;
+  const distinct = diff >= CONFIG.newContentDiffThreshold;
+  const captureCooldownElapsed = now - lastAutoCaptureAt >= 900;
+  const stableEnough = now - stableSince >= 550;
+  // Fall back to a timed capture when the camera never reaches pixel stability.
+  const fallbackReady = now - lastAutoCaptureAt >= CONFIG.otherFallbackCaptureMs;
+  if (distinct && captureCooldownElapsed && (stableEnough || fallbackReady) && captures.length < CONFIG.maxCaptures) {
+    if (await addCapture({ automatic: true, signature })) {
+      lastAutoCaptureAt = now;
+      otherLastDistinctAt = now;
+      lastMeaningfulChangeAt = now;
+      setScanState(`Other mode: automatically captured view ${captures.length}. Continue scrolling, or hold steady for analysis.`);
+    }
+    return;
+  }
+
+  // A static camera can have ongoing tiny frame changes. Use the last
+  // distinct capture time, not a constantly refreshed motion timestamp.
+  const quietFor = now - Math.max(lastAutoCaptureAt, otherLastDistinctAt);
   if (captures.length && quietFor >= CONFIG.otherQuietMs && lastAnalyzedCaptureCount < captures.length) {
-    setScanState(`Other mode: ${captures.length} distinct view${captures.length === 1 ? '' : 's'} collected. Analysing full context…`);
+    setScanState(`Other mode: ${captures.length} view${captures.length === 1 ? '' : 's'} collected automatically. Analysing…`);
     await analyzeCaptures({ automatic: true });
     return;
   }
 
-  if (!captures.length) setScanState('Other mode: hold the first part of the question steady.');
-  else {
-    const seconds = Math.max(0, Math.ceil((CONFIG.otherQuietMs - quietFor) / 1000));
-    setScanState(`Other mode: ${captures.length} view${captures.length === 1 ? '' : 's'} collected. Scroll for more context, or hold steady${seconds ? ` for ~${seconds}s` : ''}.`);
-  }
+  const seconds = Math.max(0, Math.ceil((CONFIG.otherQuietMs - quietFor) / 1000));
+  setScanState(`Other mode: ${captures.length} automatic view${captures.length === 1 ? '' : 's'} saved. Scroll for more, or wait ~${seconds}s for analysis.`);
 }
 
 function drawVideoFrame(ctx, sx, sy, sw, sh, dx, dy, dw, dh) {
@@ -566,6 +609,7 @@ async function addCapture({ manual = false, automatic = false, signature = null 
     captureSignatures.push(signature || createFrameSignature());
     renderCaptures();
     if (manual) {
+      manualCaptureMode = true;
       lastMeaningfulChangeAt = performance.now();
       els.message.textContent = `Manual capture ${captures.length} added.`;
     } else if (automatic) els.message.textContent = `Automatically captured view ${captures.length}.`;
@@ -592,21 +636,19 @@ function renderCaptures() {
     remove.textContent = '×';
     remove.title = 'Remove';
     remove.setAttribute('aria-label', `Remove capture ${i + 1}`);
-    remove.addEventListener('click', () => {
-      captures.splice(i, 1);
-      captureSignatures.splice(i, 1);
-      lastAnalyzedCaptureCount = Math.min(lastAnalyzedCaptureCount, captures.length);
-      renderCaptures();
-    });
+    remove.disabled = true;
+    remove.title = 'Captured views are retained until Reset question';
+    remove.setAttribute('aria-label', 'Use Reset question to clear captured views');
     wrap.append(img, label, remove);
     els.thumbnails.appendChild(wrap);
   });
   els.analyzeBtn.disabled = captures.length === 0 || requestInFlight;
-  els.clearBtn.disabled = captures.length === 0 || requestInFlight;
+  els.clearBtn.disabled = requestInFlight;
   els.addPageBtn.disabled = !stream || captures.length >= CONFIG.maxCaptures || requestInFlight;
 }
 
 function resetQuestionSession(message = '') {
+  manualCaptureMode = false;
   captures = [];
   captureSignatures = [];
   answered = false;
@@ -652,7 +694,7 @@ async function analyzeCaptures({ manual = false } = {}) {
     if (!data.question_detected) {
       answered = false;
       els.message.textContent = data.missing_context || 'No readable assessment question detected yet.';
-      if (mode === 'mcq') {
+      if (mode === 'mcq' && !manualCaptureMode) {
         captures = [];
         captureSignatures = [];
         lastAnalyzedCaptureCount = 0;
@@ -670,7 +712,7 @@ async function analyzeCaptures({ manual = false } = {}) {
       answered = false;
       needsMoreContext = true;
       els.message.textContent = `More context needed: ${data.missing_context || 'continue scrolling through the remaining question/code/options.'}`;
-      setScanState('Keep scrolling. New distinct views will be added to the same question automatically.');
+      setScanState(manualCaptureMode ? 'More context needed. Add another view manually, then press Analyse now.' : 'Keep scrolling. New distinct views will be added to the same question automatically.');
       return;
     }
 
@@ -680,10 +722,10 @@ async function analyzeCaptures({ manual = false } = {}) {
     nextQuestionCandidateSince = 0;
     otherChangeCandidateSince = 0;
     lastOtherChangeCheckAt = performance.now();
-    els.message.textContent = mode === 'other'
+    els.message.textContent = manualCaptureMode ? 'Manual answer locked. Captures remain until Reset question.' : mode === 'other'
       ? 'Answer ready and locked. Scroll within the same question freely; it will remain visible.'
       : 'Answer ready. Move to the next question; the camera will detect the change automatically.';
-    setScanState(mode === 'other'
+    setScanState(manualCaptureMode ? 'Manual answer locked until Reset question.' : mode === 'other'
       ? 'Answer locked. Watching for a genuinely new question…'
       : 'Answer ready. Watching for the next question…');
   } catch (e) {
@@ -955,7 +997,26 @@ function setAudioState(text) {
 
 // ---------------- Shared result helpers ----------------
 
+function applyAnswerVariant(v) {
+  els.answer.textContent = v.answer || '—';
+  els.logic.textContent = v.logic || '';
+  els.logicWrap.hidden = !v.logic;
+  els.code.textContent = v.code || '';
+  els.codeWrap.hidden = !v.code;
+  els.explanation.textContent = v.explanation || '';
+}
+
+$('#answerVariantSelect').addEventListener('change', (event) => {
+  const variants = latestAnswerData?.answer_variants;
+  const index = Number(event.target.value);
+  if (Array.isArray(variants) && variants[index]) applyAnswerVariant(variants[index]);
+});
+
 function renderResult(data) {
+  latestAnswerData = data;
+  followupMessages = [];
+  $('#followupHistory').innerHTML = '';
+  $('#followupStatus').textContent = '';
   els.detectedType.textContent = humanType(data.question_type || 'other');
   els.summary.textContent = data.question_summary || '';
   els.question.textContent = data.question || 'Question detected.';
@@ -967,16 +1028,29 @@ function renderResult(data) {
     d.textContent = option;
     els.options.appendChild(d);
   }
-  els.answer.textContent = data.answer || '—';
-  els.logic.textContent = data.logic || '';
-  els.logicWrap.hidden = !data.logic;
-  els.code.textContent = data.code || '';
-  els.codeWrap.hidden = !data.code;
-  els.explanation.textContent = data.explanation || '';
+  const variantWrap = $('#answerVariantWrap');
+  const variantSelect = $('#answerVariantSelect');
+  const variants = Array.isArray(data.answer_variants) ? data.answer_variants.filter(v => v && typeof v.answer === 'string') : [];
+  variantWrap.hidden = variants.length < 2;
+  variantSelect.replaceChildren();
+  for (const [index, variant] of variants.entries()) {
+    const option = document.createElement('option');
+    option.value = String(index);
+    option.textContent = variant.label || `Option ${index + 1}`;
+    variantSelect.appendChild(option);
+  }
+  variantSelect.value = '0';
+  applyAnswerVariant(variants[0] || data);
   els.confidence.textContent = data.confidence || '—';
 }
 
 function clearResult() {
+  $('#answerVariantWrap').hidden = true;
+  $('#answerVariantSelect').replaceChildren();
+  latestAnswerData = null;
+  followupMessages = [];
+  $('#followupHistory').innerHTML = '';
+  $('#followupStatus').textContent = '';
   els.detectedType.textContent = '—';
   els.summary.textContent = '';
   els.question.textContent = 'No question analysed yet.';
@@ -1022,3 +1096,49 @@ updateAudioModeUI();
 renderCaptures();
 clearResult();
 enumerateCameras();
+
+// Follow-ups use the saved result, never trigger a fresh camera scan or clear the answer.
+async function submitFollowup(text, audioBlob = null) {
+  const status = $('#followupStatus');
+  if (!latestAnswerData) { status.textContent = 'Analyse a question first.'; return; }
+  if (!text.trim() && !audioBlob) return;
+  const button = $('#followupSend');
+  button.disabled = true;
+  status.textContent = audioBlob ? 'Transcribing your follow-up…' : 'Refining answer…';
+  try {
+    const payload = { question: latestAnswerData, history: followupMessages.slice(-8), instruction: text.trim() };
+    if (audioBlob) payload.audioDataUrl = await blobToDataUrl(audioBlob);
+    const response = await fetch('/api/followup', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload) });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Follow-up failed.');
+    const userText = data.transcript || text.trim();
+    followupMessages.push({ role:'user', text:userText }, { role:'assistant', text:data.answer });
+    for (const [who, value] of [['You',userText],['Assistant',data.answer]]) {
+      const div = document.createElement('div'); div.className = 'followup-entry';
+      const label = document.createElement('strong'); label.textContent = who + ': ';
+      const body = document.createElement('span'); body.textContent = value;
+      div.append(label,body); $('#followupHistory').appendChild(div);
+    }
+    $('#followupInput').value = '';
+    status.textContent = 'Follow-up ready. Original answer remains above.';
+  } catch(e) { status.textContent = e.message; }
+  finally { button.disabled = false; }
+}
+async function startFollowupMic() {
+  try {
+    if (!latestAnswerData) throw new Error('Analyse a question first.');
+    followupStream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
+    const mimeType = supportedAudioMimeType();
+    const recorder = new MediaRecorder(followupStream, mimeType ? { mimeType } : {});
+    followupRecorder = recorder;
+    const parts = [];
+    recorder.ondataavailable = (e) => { if (e.data.size) parts.push(e.data); };
+    recorder.onstop = async () => {
+      $('#followupMic').hidden = false; $('#followupMicStop').hidden = true;
+      followupStream?.getTracks().forEach(t => t.stop()); followupStream = null;
+      if (parts.length) await submitFollowup('', new Blob(parts, { type:recorder.mimeType || 'audio/webm' }));
+    };
+    recorder.start(); $('#followupMic').hidden = true; $('#followupMicStop').hidden = false;
+    $('#followupStatus').textContent = 'Listening to your follow-up…';
+  } catch(e) { $('#followupStatus').textContent = e.message; }
+}

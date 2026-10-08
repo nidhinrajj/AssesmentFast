@@ -109,6 +109,36 @@ Return ONLY JSON:
   }
 });
 
+app.post('/api/followup', async (req, res) => {
+  try {
+    const apiKey = requireApiKey(res); if (!apiKey) return;
+    const question = req.body?.question;
+    if (!question || typeof question !== 'object') return res.status(400).json({ error:'Analyse a question first.' });
+    let instruction = String(req.body?.instruction || '').slice(0, 4000);
+    if (req.body?.audioDataUrl) {
+      const { mimeType, bytes, extension } = decodeAudioDataUrl(req.body.audioDataUrl);
+      if (bytes.length > 24 * 1024 * 1024) return res.status(400).json({error:'Recording too large.'});
+      const form = new FormData();
+      form.append('model', process.env.OPENAI_TRANSCRIBE_MODEL || 'gpt-4o-mini-transcribe');
+      form.append('file', new Blob([bytes], {type:mimeType}), `followup.${extension}`);
+      const tr = await fetch('https://api.openai.com/v1/audio/transcriptions', {method:'POST',headers:{Authorization:`Bearer ${apiKey}`},body:form});
+      const td = await tr.json();
+      if (!tr.ok) return res.status(tr.status).json({error:td.error?.message || 'Transcription failed.'});
+      instruction = String(td.text || '').trim().slice(0,4000);
+    }
+    if (!instruction) return res.status(400).json({error:'No follow-up instruction detected.'});
+    const history = Array.isArray(req.body?.history) ? req.body.history.slice(-8).map(x => ({role:x.role === 'assistant'?'assistant':'user', text:String(x.text||'').slice(0,4000)})) : [];
+    const prompt = `You are refining an answer to an AI-permitted assessment question. Use only the given question, original result, and conversation. Follow the user's requested format precisely. If information is insufficient, say so. Do not invent question details.
+Original result:
+${JSON.stringify(question).slice(0,20000)}
+Conversation:
+${JSON.stringify(history).slice(0,14000)}
+User instruction: ${instruction}`;
+    const raw = await callResponsesApi(apiKey, process.env.OPENAI_MODEL || 'gpt-5.4-mini', [{role:'user',content:[{type:'input_text',text:prompt}]}]);
+    return res.json({ transcript:req.body?.audioDataUrl ? instruction : undefined, answer:extractOutputText(raw) });
+  } catch(e) { console.error(e); return res.status(e.status || 500).json({error:e.message || 'Follow-up failed.'}); }
+});
+
 app.post('/api/audio/analyze', async (req, res) => {
   try {
     const audioDataUrl = req.body?.audioDataUrl;
@@ -289,8 +319,10 @@ function jsonResponseContract(forcedType) {
   "explanation": "short useful explanation",
   "confidence": "high|medium|low",
   "needs_more_pages": false,
-  "missing_context": "what additional information is needed, otherwise empty string"
-}`;
+  "missing_context": "what additional information is needed, otherwise empty string",
+  "answer_variants": [{"label":"Option 1 - Recommended","answer":"primary answer","logic":"approach if applicable","code":"code if applicable","explanation":"brief rationale"}]
+}
+For OTHER and AUDIO questions, return 2 or 3 useful answer_variants where legitimate alternatives exist. Option 1 must be the recommended primary answer, and must exactly match the top-level answer/logic/code/explanation. Additional options must be valid alternative implementations, approaches, or levels of detail, NOT different guesses at a single factual answer. If there is only one correct answer (e.g. MCQ or exact output), offer distinct explanation styles only, keeping the answer correct. Never invent alternatives. For MCQ mode, answer_variants can be omitted.`;
 }
 
 function emptyAudioResult(transcript, missingContext) {
